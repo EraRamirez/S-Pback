@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: saas_pymes
+      JWT_SECRET: change-me
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:
