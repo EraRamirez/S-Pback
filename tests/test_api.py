@@ -121,3 +121,99 @@ async def test_summary(client):
     assert body["stockTotal"] == 21
     assert body["gananciaHoy"] == 15.0
     assert body["productosBajoInventario"][0]["nombre"] == "Coca Cola 600ml"
+    assert body["productosBajoInventario"][0]["unidad"] == "pieza"
+
+
+async def test_granel_product_requires_unit(client):
+    token = await register(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = await client.post(
+        "/products",
+        headers=headers,
+        json={"name": "Masa", "sale_type": "granel", "cost_price": 8, "sale_price": 12, "stock": 0},
+    )
+    assert r.status_code == 422
+
+
+async def test_granel_product_sale_with_decimal_quantity(client):
+    token = await register(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    product = await create_product(
+        client, token, name="Masa", sale_type="granel", unit="kg", cost_price=8, sale_price=12, stock=50
+    )
+    assert product["unit"] == "kg"
+    assert product["sale_type"] == "granel"
+
+    r = await client.post(
+        "/movements/sale", headers=headers, json={"product_id": product["_id"], "quantity": 2.5}
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["new_stock"] == 47.5
+    assert body["profit_estimated"] == 10.0
+
+
+async def test_raw_materials_purchase_and_usage(client):
+    token = await register(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = await client.post("/raw-materials", headers=headers, json={"name": "Maiz", "unit": "kg", "stock": 0})
+    assert r.status_code == 201
+    material = r.json()
+    assert material["stock"] == 0
+
+    r = await client.post(
+        f"/raw-materials/{material['_id']}/purchases",
+        headers=headers,
+        json={"quantity": 100, "unit_cost": 12},
+    )
+    assert r.status_code == 201
+    assert r.json()["new_stock"] == 100
+    assert r.json()["total_cost"] == 1200
+
+    r = await client.post(
+        f"/raw-materials/{material['_id']}/usage",
+        headers=headers,
+        json={"quantity": 30},
+    )
+    assert r.status_code == 201
+    assert r.json()["new_stock"] == 70
+
+    r = await client.post(
+        f"/raw-materials/{material['_id']}/usage",
+        headers=headers,
+        json={"quantity": 999},
+    )
+    assert r.status_code == 400
+
+    r = await client.get("/raw-materials", headers=headers)
+    assert r.status_code == 200
+    assert r.json()[0]["stock"] == 70
+
+
+async def test_quincena_report_breaks_down_by_day(client):
+    token = await register(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    product = await create_product(client, token)
+
+    await client.post("/movements/sale", headers=headers, json={"product_id": product["_id"], "quantity": 2})
+
+    r = await client.post("/raw-materials", headers=headers, json={"name": "Bolsas", "unit": "pieza"})
+    material = r.json()
+    await client.post(
+        f"/raw-materials/{material['_id']}/purchases", headers=headers, json={"quantity": 100, "unit_cost": 0.5}
+    )
+
+    r = await client.get("/summary/quincena", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ingresosTotal"] == 30.0
+    assert body["egresosTotal"] == 50.0
+    assert body["gananciaTotal"] == -20.0
+    assert len(body["dias"]) > 0
+    today_entries = [d for d in body["dias"] if d["ingresos"] > 0 or d["egresos"] > 0]
+    assert len(today_entries) == 1
+    assert today_entries[0]["ingresos"] == 30.0
+    assert today_entries[0]["egresos"] == 50.0

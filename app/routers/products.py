@@ -33,7 +33,8 @@ async def create_product(
         "business_id": ObjectId(business_id),
         "name": body.name,
         "name_normalized": normalize_name(body.name),
-        "unit": "pieza",
+        "sale_type": body.sale_type,
+        "unit": body.unit if body.sale_type == "granel" else "pieza",
         "cost_price": body.cost_price,
         "sale_price": body.sale_price,
         "stock": body.stock,
@@ -57,6 +58,8 @@ async def update_product(
     updates = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if "name" in updates:
         updates["name_normalized"] = normalize_name(updates["name"])
+    if updates.get("sale_type") == "pieza":
+        updates["unit"] = "pieza"
     updates["updated_at"] = datetime.now(timezone.utc)
 
     result = await db.products.find_one_and_update(

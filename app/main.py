@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth, movements, products, summary
+from app.routers import auth, movements, products, raw_materials, summary
 
 app = FastAPI(title="S-Pback")
 
@@ -21,4 +21,5 @@ async def health():
 app.include_router(auth.router)
 app.include_router(products.router)
 app.include_router(movements.router)
+app.include_router(raw_materials.router)
 app.include_router(summary.router)

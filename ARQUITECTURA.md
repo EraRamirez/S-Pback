@@ -14,6 +14,7 @@
 - ✅ Auth (telefono + PIN, JWT), CRUD de productos, movimientos (venta/compra/ajuste) y `/summary` implementados y con tests (`tests/`, corren contra Mongo simulado con `mongomock-motor`, sin infraestructura real).
 - ✅ La lógica de negocio vive en `app/services/movements.py` con la misma forma de entrada/salida que los "tool contracts" de la sección 7.8, para que envolverla como tools de LangChain (fase de voz) no requiera reescribirla.
 - ⚠️ Diferencia respecto al modelo de datos original (sección 6.3): el PIN se guarda como `pin_hash` directamente en el documento `Business` (no existe una colección `users` separada), porque en el alcance actual un negocio tiene un solo dueño.
+- ✅ El modelo se generalizó para servir a cualquier giro (no solo abarrotes) — ver sección 6.10: productos por pieza o a granel (kg/g), inventario independiente de materia prima, y reporte quincenal con desglose diario de ingresos/egresos. Detalle en secciones 6.10 a 6.12.
 - ⏳ Pendiente: Redis, agente LangChain, Speech-to-Text, y el flujo completo de voz — todo en secciones 7 y 8, sin implementar.
 
 ---
@@ -21,6 +22,8 @@
 ## 1. Objetivo de la arquitectura
 
 Definir la estructura técnica del sistema que soportará el MVP del Agente de Inventario por Voz para abarrotes de colonia en CDMX.
+
+**Nota de generalización:** el modelo de datos se generalizó (sección 6.10-6.12) para que el mismo sistema sirva también a otros giros pequeños con lógica similar pero venta a granel además de por pieza (ej. un molino de masa para tamal), sin cambiar el nicho de mercado principal ni la propuesta de valor definida en Fundamentos — es una decisión técnica para no tener que rediseñar el esquema si el producto se ofrece a un giro distinto.
 
 La arquitectura está diseñada para:
 
@@ -231,6 +234,68 @@ Colección `inventory_movements`:
 - Redis maneja memoria del agente, no Mongo (fase posterior).
 - Mongo guarda únicamente datos persistentes del negocio.
 - Diseñado para soportar crecimiento futuro sin rediseño estructural.
+
+### 6.10 Generalización: venta por pieza o a granel
+
+El modelo original asumía que todo se vendía por pieza (abarrotes). Se generalizó para servir también a negocios que venden a granel (ej. un molino de masa que vende masa por kilo), sin perder soporte para venta por pieza.
+
+Cambios sobre `Product` (sección 6.4):
+
+- Nuevo campo `sale_type`: `"pieza"` | `"granel"`.
+- El campo `unit` ahora depende de `sale_type`: si es `"pieza"`, siempre vale `"pieza"`; si es `"granel"`, debe ser `"kg"` o `"g"` (las únicas unidades soportadas por ahora — se puede ampliar a `"litro"`/`"ml"` si un negocio lo necesita).
+- `stock`, `min_stock_alert`, y `quantity`/`delta_quantity` en movimientos pasan de entero a **decimal**, para poder vender fracciones (ej. "2.5 kg de masa"). Esto no rompe el caso de pieza: 3.0 piezas se comporta igual que 3.
+
+Esto significa que `stockTotal` en `/summary` ahora solo suma productos `sale_type == "pieza"` (sumar piezas y kilos en un mismo número no tiene sentido).
+
+### 6.11 Materia prima (nuevo, independiente de productos)
+
+Inventario separado para insumos que un negocio compra pero no vende directamente (ej. maíz, cal, gas, bolsas). **Decisión explícita del negocio: no hay receta ni cálculo automático de costo de producto a partir de materia prima consumida** — son dos inventarios completamente independientes. Esto es intencional: simplifica el modelo y evita tener que mantener recetas por producto que en la práctica varían mucho (ej. la masa lleva sal, manteca, agua, en proporciones que no se miden con precisión en el negocio real).
+
+Colección `raw_materials`:
+
+```json
+{
+  "_id": "ObjectId",
+  "business_id": "ObjectId",
+  "name": "Maiz",
+  "unit": "kg",
+  "stock": 70,
+  "is_active": true,
+  "created_at": "ISODate",
+  "updated_at": "ISODate"
+}
+```
+
+`unit` es texto libre (no restringido a un enum) porque solo se usa para mostrarlo, no para lógica de negocio.
+
+Colección `raw_material_movements`:
+
+```json
+{
+  "_id": "ObjectId",
+  "business_id": "ObjectId",
+  "raw_material_id": "ObjectId",
+  "type": "compra",
+  "quantity": 100,
+  "unit_cost": 12,
+  "total_cost": 1200,
+  "created_at": "ISODate"
+}
+```
+
+Tipos: `"compra"` (aumenta stock, registra costo — de aquí salen los "egresos" del reporte quincenal) y `"consumo"` (disminuye stock, sin costo asociado — solo para saber cuánto queda). `consumo` no puede dejar el stock en negativo.
+
+Endpoints: `GET/POST /raw-materials`, `PUT/DELETE /raw-materials/{id}`, `POST /raw-materials/{id}/purchases`, `POST /raw-materials/{id}/usage`.
+
+### 6.12 Reporte quincenal (ingresos vs. egresos, desglose diario)
+
+`GET /summary/quincena?fecha=YYYY-MM-DD` (fecha opcional, por defecto hoy). Calcula la quincena a la que pertenece esa fecha (días 1-15 o 16-fin de mes del calendario) y regresa el desglose día por día.
+
+- **Ingresos** de un día = suma de `total_amount` de movimientos `sale` (ventas de producto) creados ese día.
+- **Egresos** de un día = suma de `total_amount` de movimientos `purchase` (entradas de producto/mercancía) **+** suma de `total_cost` de movimientos `compra` de materia prima, creados ese día. Decisión explícita: los egresos incluyen ambos tipos de compra, para dar una foto completa de cuánto dinero sale del negocio — no solo materia prima.
+- `ganancia` de un día = `ingresos - egresos` (una vista simple de flujo de caja, no un margen por producto).
+
+La respuesta incluye totales de la quincena completa (`ingresosTotal`, `egresosTotal`, `gananciaTotal`) y el arreglo `dias` con el desglose, para que el frontend pueda mostrar el total primero y el detalle día por día como opción ("ver desglose").
 
 ---
 

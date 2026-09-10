@@ -16,7 +16,7 @@ async def _get_owned_product(db: AsyncIOMotorDatabase, business_id: str, product
 # Mongo standalone (no replica set) doesn't support multi-document transactions,
 # so stock update + movement insert run sequentially instead of atomically.
 async def register_sale(
-    db: AsyncIOMotorDatabase, business_id: str, product_id: str, quantity: int, created_by_voice: bool
+    db: AsyncIOMotorDatabase, business_id: str, product_id: str, quantity: float, created_by_voice: bool
 ) -> dict:
     product = await _get_owned_product(db, business_id, product_id)
 
@@ -58,7 +58,7 @@ async def register_purchase(
     db: AsyncIOMotorDatabase,
     business_id: str,
     product_id: str,
-    quantity: int,
+    quantity: float,
     unit_cost: float | None,
     created_by_voice: bool,
 ) -> dict:
@@ -101,7 +101,7 @@ async def adjust_stock(
     db: AsyncIOMotorDatabase,
     business_id: str,
     product_id: str,
-    delta_quantity: int,
+    delta_quantity: float,
     reason: str,
     created_by_voice: bool,
 ) -> dict:

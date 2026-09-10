@@ -1,12 +1,15 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.common import PyObjectId
 
 MovementType = Literal["sale", "purchase", "adjustment"]
 MovementSource = Literal["voice", "manual"]
+SaleType = Literal["pieza", "granel"]
+GranelUnit = Literal["kg", "g"]
+RawMaterialMovementType = Literal["compra", "consumo"]
 
 
 class RegisterRequest(BaseModel):
@@ -27,29 +30,40 @@ class TokenResponse(BaseModel):
 
 class ProductCreate(BaseModel):
     name: str
+    sale_type: SaleType = "pieza"
+    unit: Optional[GranelUnit] = None
     cost_price: float = Field(ge=0)
     sale_price: float = Field(ge=0)
-    stock: int = Field(ge=0, default=0)
-    min_stock_alert: int = Field(ge=0, default=0)
+    stock: float = Field(ge=0, default=0)
+    min_stock_alert: float = Field(ge=0, default=0)
+
+    @model_validator(mode="after")
+    def check_unit(self):
+        if self.sale_type == "granel" and self.unit is None:
+            raise ValueError("unit es requerido para productos a granel (kg o g)")
+        return self
 
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
+    sale_type: Optional[SaleType] = None
+    unit: Optional[GranelUnit] = None
     cost_price: Optional[float] = Field(default=None, ge=0)
     sale_price: Optional[float] = Field(default=None, ge=0)
-    stock: Optional[int] = Field(default=None, ge=0)
-    min_stock_alert: Optional[int] = Field(default=None, ge=0)
+    stock: Optional[float] = Field(default=None, ge=0)
+    min_stock_alert: Optional[float] = Field(default=None, ge=0)
 
 
 class ProductOut(BaseModel):
     id: PyObjectId = Field(alias="_id")
     business_id: PyObjectId
     name: str
+    sale_type: SaleType
     unit: str
     cost_price: float
     sale_price: float
-    stock: int
-    min_stock_alert: int
+    stock: float
+    min_stock_alert: float
     is_active: bool
 
     model_config = {"populate_by_name": True}
@@ -57,20 +71,20 @@ class ProductOut(BaseModel):
 
 class RegisterSaleRequest(BaseModel):
     product_id: str
-    quantity: int = Field(gt=0)
+    quantity: float = Field(gt=0)
     created_by_voice: bool = False
 
 
 class RegisterPurchaseRequest(BaseModel):
     product_id: str
-    quantity: int = Field(gt=0)
+    quantity: float = Field(gt=0)
     unit_cost: Optional[float] = Field(default=None, ge=0)
     created_by_voice: bool = False
 
 
 class AdjustStockRequest(BaseModel):
     product_id: str
-    delta_quantity: int
+    delta_quantity: float
     reason: str
     created_by_voice: bool = False
 
@@ -79,8 +93,8 @@ class MovementOut(BaseModel):
     id: PyObjectId = Field(alias="_id")
     product_id: PyObjectId
     type: MovementType
-    quantity: int
-    new_stock: int
+    quantity: float
+    new_stock: float
     total_amount: Optional[float] = None
     profit_estimated: Optional[float] = None
 
@@ -90,11 +104,67 @@ class MovementOut(BaseModel):
 class LowStockProduct(BaseModel):
     id: str
     nombre: str
-    cantidad: int
+    cantidad: float
+    unidad: str
 
 
 class SummaryOut(BaseModel):
-    stockTotal: int
+    stockTotal: float
     gananciaHoy: float
     gananciaSemana: float
     productosBajoInventario: list[LowStockProduct]
+
+
+class QuincenaDia(BaseModel):
+    fecha: str
+    ingresos: float
+    egresos: float
+    ganancia: float
+
+
+class QuincenaOut(BaseModel):
+    quincenaInicio: str
+    quincenaFin: str
+    ingresosTotal: float
+    egresosTotal: float
+    gananciaTotal: float
+    dias: list[QuincenaDia]
+
+
+class RawMaterialCreate(BaseModel):
+    name: str
+    unit: str = Field(min_length=1)
+    stock: float = Field(ge=0, default=0)
+
+
+class RawMaterialUpdate(BaseModel):
+    name: Optional[str] = None
+    unit: Optional[str] = Field(default=None, min_length=1)
+
+
+class RawMaterialOut(BaseModel):
+    id: PyObjectId = Field(alias="_id")
+    business_id: PyObjectId
+    name: str
+    unit: str
+    stock: float
+    is_active: bool
+
+    model_config = {"populate_by_name": True}
+
+
+class RawMaterialPurchaseRequest(BaseModel):
+    quantity: float = Field(gt=0)
+    unit_cost: float = Field(ge=0)
+
+
+class RawMaterialUsageRequest(BaseModel):
+    quantity: float = Field(gt=0)
+
+
+class RawMaterialMovementOut(BaseModel):
+    movement_id: str
+    raw_material_name: str
+    quantity: float
+    new_stock: float
+    total_cost: Optional[float] = None
