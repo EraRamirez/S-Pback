@@ -7,7 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.db.mongo import get_db
 from app.deps import get_current_business_id
 from app.models.schemas import QuincenaOut, SummaryOut
-from app.services.movements import ganancia_desde
+from app.services.movements import ganancia_desde, ventas_por_producto_desde
 from app.services.reports import quincena_breakdown
 
 router = APIRouter(prefix="/summary", tags=["summary"])
@@ -29,6 +29,7 @@ async def get_summary(
     ganancia_hoy = await ganancia_desde(db, business_id, start_of_day)
     ganancia_semana = await ganancia_desde(db, business_id, start_of_week)
     bajo_inventario = [p for p in products if p["stock"] <= p["min_stock_alert"]]
+    ventas_hoy = await ventas_por_producto_desde(db, business_id, start_of_day)
 
     return SummaryOut(
         stockTotal=sum(p["stock"] for p in products if p.get("sale_type", "pieza") == "pieza"),
@@ -38,6 +39,7 @@ async def get_summary(
             {"id": str(p["_id"]), "nombre": p["name"], "cantidad": p["stock"], "unidad": p["unit"]}
             for p in bajo_inventario
         ],
+        ventasHoy=ventas_hoy,
     )
 
 

@@ -172,3 +172,45 @@ async def ganancia_desde(db: AsyncIOMotorDatabase, business_id: str, since: date
     ]
     result = await db.inventory_movements.aggregate(pipeline).to_list(length=1)
     return result[0]["total"] if result else 0.0
+
+
+async def ventas_por_producto_desde(db: AsyncIOMotorDatabase, business_id: str, since: datetime) -> list[dict]:
+    pipeline = [
+        {
+            "$match": {
+                "business_id": ObjectId(business_id),
+                "type": "sale",
+                "created_at": {"$gte": since},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$product_id",
+                "cantidad": {"$sum": "$quantity"},
+                "monto": {"$sum": "$total_amount"},
+            }
+        },
+    ]
+    rows = await db.inventory_movements.aggregate(pipeline).to_list(length=None)
+    if not rows:
+        return []
+
+    products = await db.products.find({"_id": {"$in": [r["_id"] for r in rows]}}).to_list(length=None)
+    products_by_id = {p["_id"]: p for p in products}
+
+    result = []
+    for row in rows:
+        product = products_by_id.get(row["_id"])
+        if not product:
+            continue
+        result.append(
+            {
+                "product_id": str(row["_id"]),
+                "product_name": product["name"],
+                "unit": product["unit"],
+                "cantidad": row["cantidad"],
+                "monto": row["monto"],
+            }
+        )
+    result.sort(key=lambda r: r["monto"], reverse=True)
+    return result

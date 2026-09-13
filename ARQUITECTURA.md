@@ -244,6 +244,7 @@ Cambios sobre `Product` (sección 6.4):
 - Nuevo campo `sale_type`: `"pieza"` | `"granel"`.
 - El campo `unit` ahora depende de `sale_type`: si es `"pieza"`, siempre vale `"pieza"`; si es `"granel"`, debe ser `"kg"` o `"g"` (las únicas unidades soportadas por ahora — se puede ampliar a `"litro"`/`"ml"` si un negocio lo necesita).
 - `stock`, `min_stock_alert`, y `quantity`/`delta_quantity` en movimientos pasan de entero a **decimal**, para poder vender fracciones (ej. "2.5 kg de masa"). Esto no rompe el caso de pieza: 3.0 piezas se comporta igual que 3.
+- `cost_price` (junto con `stock` y `min_stock_alert`) ahora es **opcional al crear un producto** (default 0) — solo `name` y `sale_price` son obligatorios. Decisión del negocio: muchos dueños solo quieren capturar "a cuánto vendo el kilo" sin llevar costo ni control de stock fino. Consecuencia aceptada: si no se captura `cost_price`, `gananciaHoy`/`gananciaSemana` tratan esa venta como 100% ganancia (costo 0), porque el sistema no tiene forma de saber el costo real.
 
 Esto significa que `stockTotal` en `/summary` ahora solo suma productos `sale_type == "pieza"` (sumar piezas y kilos en un mismo número no tiene sentido).
 
@@ -296,6 +297,68 @@ Endpoints: `GET/POST /raw-materials`, `PUT/DELETE /raw-materials/{id}`, `POST /r
 - `ganancia` de un día = `ingresos - egresos` (una vista simple de flujo de caja, no un margen por producto).
 
 La respuesta incluye totales de la quincena completa (`ingresosTotal`, `egresosTotal`, `gananciaTotal`) y el arreglo `dias` con el desglose, para que el frontend pueda mostrar el total primero y el detalle día por día como opción ("ver desglose").
+
+### 6.13 Apartados (reservaciones)
+
+Módulo para clientes que apartan producto con anticipación (ej. masa/mole/hoja para tamal para una fecha específica) y lo recogen después, a veces pagando por adelantado, a veces en varias exhibiciones.
+
+**Decisiones explícitas del negocio:**
+
+- **La entrega es del apartado completo, no producto por producto.** Al entregar, se marcan como `delivered` todos los items pendientes del apartado en una sola operación. Si en la práctica un cliente recoge sus productos en momentos distintos (ej. se lleva la hoja hoy y la masa después), la recomendación es capturar **dos apartados separados**, uno por cada evento de entrega — no partir uno solo. (Diseño revisado: la primera versión entregaba item por item; se simplificó porque el negocio real entrega todo junto.)
+- **Entregar un apartado = una venta real por cada producto.** Al entregarlo, se llama internamente a la misma lógica de `register_sale` (sección 6.10) usada por `/movements/sale` para cada item pendiente: descuenta stock del producto y cuenta hacia la ganancia y el reporte quincenal, exactamente igual que una venta hecha directo en Productos. Simplificación aceptada: usa el precio **actual** del producto al momento de entregar, no el precio congelado en el apartado — si el precio cambió entre el apartado y la entrega, puede haber una pequeña discrepancia. No se optimizó para ese caso porque es raro en la práctica.
+- **El estado de pago se calcula, no se guarda.** Se guarda `amount_paid` (cuánto lleva pagado) y se compara contra `total_amount`: `no_pagado` (0), `parcial` (más de 0 y menos del total), `pagado` (llegó o superó el total). No hay fecha límite para liquidar — solo el monto.
+- **Nunca se elimina un apartado.** Queda como historial permanente; lo que cambia es el estado de sus items (entregado o no) y cuánto se ha pagado.
+- **Cargo fijo por bolsa.** Si un producto del apartado usa `container: "bolsa"` (en vez de que el cliente traiga su propio bote), se suma automáticamente `BOLSA_FEE` (actualmente $2 MXN, constante en `app/services/reservations.py`) al subtotal de ese item. Es un valor fijo en código, no configurable por el usuario todavía.
+- **CRUD del apartado mientras esté pendiente.** Como es común que a un cliente se le olvide apartar algo, se puede editar cliente/fecha/hora, y agregar, editar (cantidad/empaque) o quitar productos individuales de un apartado ya creado — siempre que el apartado no se haya entregado y quede al menos un producto.
+
+Colección `reservations`:
+
+```json
+{
+  "_id": "ObjectId",
+  "business_id": "ObjectId",
+  "customer_name": "Martha",
+  "customer_name_normalized": "martha",
+  "pickup_date": "2026-11-01",
+  "pickup_time": "11:00",
+  "items": [
+    {
+      "item_id": "ObjectId",
+      "product_id": "ObjectId",
+      "product_name": "Masa de sal",
+      "unit": "kg",
+      "quantity": 9,
+      "unit_price": 15,
+      "subtotal": 135,
+      "container": "bote",
+      "delivered": false,
+      "delivered_at": null
+    }
+  ],
+  "total_amount": 135,
+  "amount_paid": 0,
+  "created_at": "ISODate",
+  "updated_at": "ISODate"
+}
+```
+
+`container` (`"bote"` | `"bolsa"`) vive por item, no por apartado completo, porque cada producto se puede recoger en un momento distinto con un empaque distinto.
+
+Endpoints:
+
+- `POST /reservations` — crea el apartado. El precio de cada item se toma del producto en ese momento (snapshot), y `total_amount` se calcula solo con esos precios (incluye el cargo de bolsa si aplica).
+- `GET /reservations?q=<nombre>&estado=pendiente|entregado` — lista con búsqueda rápida por nombre de cliente (para el día de mucha afluencia) y filtro por estado de entrega. `estado` se deriva de los items, no es un campo guardado.
+- `PUT /reservations/{id}` — edita `customer_name`/`pickup_date`/`pickup_time` (todos opcionales).
+- `POST /reservations/{id}/items` — agrega un producto nuevo al apartado (se le olvidó apartar algo).
+- `PUT /reservations/{id}/items/{item_id}` — edita cantidad y/o empaque de un producto no entregado; recalcula su subtotal.
+- `DELETE /reservations/{id}/items/{item_id}` — quita un producto no entregado (no se puede quitar el último).
+- `POST /reservations/{id}/deliver` — entrega **todo** el apartado de una vez (dispara la venta real de cada item pendiente, descrita arriba). Falla si no hay stock suficiente de algún producto, o si ya se había entregado todo.
+- `POST /reservations/{id}/payments` — registra un pago adicional (`amount`), se suma a `amount_paid`.
+- `GET /reservations/summary` — por producto, cuánto se ha apartado en total, cuánto se ha entregado, y cuánto sigue pendiente en todos los apartados del negocio.
+
+### 6.14 Ventas del día por producto (tabla tipo dashboard)
+
+`GET /summary` ahora incluye `ventasHoy`: una lista por producto (`product_id`, `product_name`, `unit`, `cantidad`, `monto`) con lo vendido desde la medianoche de hoy — se arma agregando los movimientos `sale` del día, sin importar si vinieron de `/movements/sale` (Productos) o de `/reservations/{id}/deliver` (Apartados), porque ambos caminos terminan escribiendo el mismo tipo de movimiento (sección 6.10). Se muestra en el Dashboard del frontend y se actualiza sola cada vez que se invalida la query `summary` (después de cualquier venta, compra o entrega).
 
 ---
 
